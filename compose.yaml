@@ -1,0 +1,54 @@
+# docker compose up -d --build   →   http://localhost:${PORT:-8080}
+
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    environment:
+      # One analyzer process per worker; jobs beyond these queue for up to 1 s.
+      WORKERS: ${WORKERS:-4}
+      CHECK_INVARIANTS: "1"
+      MAX_SOURCE_BYTES: "8192"
+      MAX_TIME_MS: "500"
+      MAX_MEMORY_KIB: "10240"
+    volumes:
+      # failures.jsonl: every failed analysis with its input (see About).
+      - failures:/var/log/typegraph
+    # Only nginx can reach it, and it can't reach anything.
+    networks: [internal]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 256
+    mem_limit: 2g
+    # Repeated from the Dockerfile: podman's default OCI image format drops HEALTHCHECK.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/api/healthz"]
+      interval: 15s
+      timeout: 3s
+      start_period: 10s
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+      args:
+        VITE_BUG_REPORT_URL: ${BUG_REPORT_URL:-}
+    ports:
+      - "${PORT:-8080}:80"
+    depends_on:
+      gateway:
+        condition: service_healthy
+    networks: [public, internal]
+    restart: unless-stopped
+
+networks:
+  public: {}
+  internal:
+    internal: true
+
+volumes:
+  failures:
