@@ -200,7 +200,7 @@ type Diagnostic = { range: Range; severity: "error" | "warning" | "note"; messag
 type Stats = { elapsedMs: number; peakMemoryKiB: number }
 ```
 Analysis outcomes come back as HTTP 200 with a `status`; the gateway's own
-answers use the HTTP codes noted above. nginx adds `429` (rate-limited) and
+answers use the HTTP codes noted above. Caddy adds `429` (rate-limited) and
 `413` for oversized bodies, both without a JSON body; the client maps those,
 network errors (`offline`) and aborts (`superseded`) to statuses too.
 
@@ -304,7 +304,7 @@ crash or stall the server for all 150 users, and Swift can't preempt a running
 synchronous computation. Therefore:
 
 ```
-nginx ──HTTP──▶ gateway (Hummingbird) ──stdin/stdout, length-prefixed──▶ worker pool (N processes)
+Caddy ──HTTP──▶ gateway (Hummingbird) ──stdin/stdout, length-prefixed──▶ worker pool (N processes)
 ```
 
 - **`typegraph-gateway`**: an HTTP server that validates the request, enqueues it, and relays the worker's JSON **bytes unchanged** (no re-encoding).
@@ -313,9 +313,9 @@ nginx ──HTTP──▶ gateway (Hummingbird) ──stdin/stdout, length-prefi
 ### 5.2 Limit enforcement
 | Limit | Mechanism |
 |---|---|
-| 8 KiB | nginx `client_max_body_size 64k` (allows for JSON escaping). The gateway counts the decoded `source.utf8.count` and returns `413`. |
+| 8 KiB | Caddy `request_body { max_size 64KB }` (allows for JSON escaping). The gateway counts the decoded `source.utf8.count` and returns `413`. |
 | 0.5 s | The gateway starts a timer when it writes the job to the worker and sends `SIGKILL` at the deadline, then respawns the worker and returns `timeLimit`. `RLIMIT_CPU` is a backstop. |
-| 10 MiB | The worker writes `5` to `/proc/self/clear_refs` (which resets the peak RSS) before each job, then reads `VmHWM` from `/proc/self/status` afterwards. If the delta exceeds the budget, it returns `memoryLimit` and discards the result. As a hard backstop against runaway allocation, it sets `setrlimit(RLIMIT_AS, current + 64 MiB)` after warm-up, with `MALLOC_ARENA_MAX=1`. If an allocation fails, the worker aborts, and the gateway reports `memoryLimit`. |
+| 10 MiB | The worker writes `5` to `/proc/self/clear_refs` (which resets the peak RSS) before each job, then reads `VmHWM` from `/proc/self/status` afterwards. If the delta exceeds the budget, it returns `memoryLimit` and discards the result. The hard cap: after warm-up, the worker sets `RLIMIT_DATA` to its current `VmData` plus the budget, with `MALLOC_ARENA_MAX=1`. The cap is set once, not per job, because freed memory stays mapped and a later job would reuse it on top of its own budget. If an allocation fails, the worker aborts, and the gateway respawns it and reports `memoryLimit`. |
 | Crash | A non-zero exit or a signal means respawn and return `internalError` with the stderr tail (the `fatalError` message). |
 
 **Assertions stay on.** The worker is a release build with `-Xswiftc -DDEBUG`,
@@ -432,7 +432,7 @@ A banner under the header names the failure:
 
 | Layer | Choice |
 |---|---|
-| Reverse proxy and static files | **nginx** (`nginx:1.27-alpine`) |
+| Reverse proxy, TLS and static files | **Caddy 2.11** with the `caddy-ratelimit` plugin |
 | HTTP server | **Swift + Hummingbird 2** (`typegraph-gateway`) |
 | Analyzer | **Swift executable** (`typegraph-worker`) linking `swift-syntax-wip` |
 | Frontend | **Vite + TypeScript + Svelte 5** |
@@ -441,7 +441,7 @@ A banner under the header names the failure:
 | State | A runes module (`store.svelte.ts`) holding selection, history, settings and the last response |
 
 ### 7.2 Why
-- **nginx, yes.** It provides `limit_req` (per-IP rate limiting), `client_max_body_size`, gzip, static asset caching and proxy timeouts out of the box. The analyzer endpoint is public and CPU-bound, so having those in front of it is worth one extra container. Caddy would make TLS easier, but it needs a plugin for rate limiting. If the host already terminates TLS (Traefik, Caddy, Cloudflare), nginx listens on plain HTTP behind it. Otherwise, mount certs into nginx and run certbot on the host.
+- **Caddy, not nginx.** The analyzer endpoint is public and CPU-bound, so it needs a front that rate-limits per IP, caps body size, compresses, caches static assets and times out the proxy. Caddy does all of that and also obtains and renews Let's Encrypt certificates itself, so the server needs no certbot, cron job or mounted certs: setting `SITE_ADDRESS` to a domain is the whole TLS setup. The cost is rate limiting, which stock Caddy lacks: `web/Dockerfile` compiles in `github.com/mholt/caddy-ratelimit` with `xcaddy`, pinned to a commit because the plugin has no recent release tag. Its limiter is a sliding window rather than nginx's token bucket, which makes no difference at these rates. If the host already terminates TLS (Traefik, Cloudflare), leave `SITE_ADDRESS=:80` and Caddy serves plain HTTP behind it.
 - **Hummingbird over Vapor.** The gateway only needs one route, a process pool and a queue. Hummingbird is smaller and NIO-native, with no ORM, templating or other unused machinery.
 - **Separate worker executable**: see §5.1. This is the most important architectural decision in the app.
 - **Svelte over React.** React's only real advantage here was React Flow's maturity, and the graph ended up as custom SVG anyway (§6.3). CodeMirror and elkjs don't depend on any framework. The app's core is one hover/selection state that three panes react to on every mouse move. Svelte's fine-grained reactivity handles that directly, while React needs memoized selectors (zustand) to avoid re-rendering the editor, the graph and the details panel on every hover.
@@ -451,6 +451,9 @@ A banner under the header names the failure:
 ```
 swift-typegraph/
 ├── SPEC.md
+├── README.md                     # running it (docker, podman, dev)
+├── DEPLOY.md                     # server, domain, .env
+├── scripts/up.sh                 # compose up --build, prints the URL
 ├── compose.yaml
 ├── .dockerignore
 ├── swift-syntax/                 # copy of swift-syntax-wip, branch typegraph-app (§3.4)
@@ -463,25 +466,29 @@ swift-typegraph/
 │   └── Dockerfile                # build context: repository root
 └── web/
     ├── src/{api,editor,graph,details,ui}/, store.svelte.ts
-    ├── nginx.conf
-    └── Dockerfile                # node build → nginx image with dist/
+    ├── Caddyfile
+    └── Dockerfile                # node build + xcaddy → Caddy image with dist/
 ```
 
 ### 7.4 Docker Compose
-`docker compose up -d --build` serves the app on `${PORT:-8080}`. See
-`compose.yaml`. In short:
+`scripts/up.sh` (`docker compose` or `podman compose` `up -d --build`) serves
+the app on `${HTTP_PORT:-8080}` and prints the URL. [README.md](README.md) covers
+running it, including Podman; [DEPLOY.md](DEPLOY.md) covers a server with a domain. See `compose.yaml`. In short:
 
 - **gateway**: `server/Dockerfile` builds on `swiftlang/swift:nightly-main-noble`
   (the engine needs a main-branch compiler, like the local toolchain) with
   `-c release -Xswiftc -DDEBUG --static-swift-stdlib`, and runs on `ubuntu:noble`
-  as a non-root user. It's only reachable from nginx (internal network), with a
+  as a non-root user. It's only reachable from Caddy (internal network), with a
   read-only root filesystem, no capabilities, and the failure log on the
   `failures` volume. Env: `WORKERS` (default 4), `CHECK_INVARIANTS=1` and the
   three limits.
 - **web**: `web/Dockerfile` builds the client (build arg `BUG_REPORT_URL` →
-  `VITE_BUG_REPORT_URL`) into `nginx:1.27-alpine`. `web/nginx.conf` has
-  `limit_req` (5 r/s per IP, burst 20, status 429), `client_max_body_size 64k`,
-  gzip, immutable caching for `/assets/`, and proxies `/api/` to the gateway.
+  `VITE_BUG_REPORT_URL`) and a Caddy binary with the rate-limit plugin into
+  `caddy:2.11.7-alpine`. `web/Caddyfile` limits `/api/analyze` to 25 requests
+  per 5 s per IP (429), caps bodies at 64 KB (413), compresses, caches
+  `/assets/` as immutable, and proxies `/api/` to the gateway. `SITE_ADDRESS`
+  (default `:80`, plain HTTP) set to a domain turns on automatic HTTPS; the
+  certificates live on the `caddy_data` volume.
 - **Architecture**: build images on the target server (`docker compose build`)
   or on native CI rather than through QEMU, which is very slow for Swift.
 
@@ -492,7 +499,7 @@ swift-typegraph/
 2. **Worker**: analysis to JSON, with golden fixtures for the three prototypes plus the cycle example from `TypeGraph.md`.
 3. **Gateway**: pool, limits and the latest-wins queue, plus a load test (k6) at 150 virtual users.
 4. **Web**: editor and request loop, then graph, then details and links.
-5. **Compose and nginx**: deploy.
+5. **Compose and Caddy**: deploy.
 
 ---
 

@@ -1,4 +1,5 @@
-# docker compose up -d --build   →   http://localhost:${PORT:-8080}
+# scripts/up.sh, or docker compose up -d --build   →   http://localhost:${HTTP_PORT:-8080}
+# On a server, .env sets SITE_ADDRESS to the domain and the ports to 80/443 (DEPLOY.md).
 
 services:
   gateway:
@@ -15,7 +16,7 @@ services:
     volumes:
       # failures.jsonl: every failed analysis with its input (see About).
       - failures:/var/log/typegraph
-    # Only nginx can reach it, and it can't reach anything.
+    # Only Caddy (web) can reach it, and it can't reach anything.
     networks: [internal]
     read_only: true
     tmpfs: [/tmp]
@@ -37,12 +38,27 @@ services:
       dockerfile: web/Dockerfile
       args:
         VITE_BUG_REPORT_URL: ${BUG_REPORT_URL:-}
+    environment:
+      # ":80" serves plain HTTP; a domain turns on automatic HTTPS.
+      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
     ports:
-      - "${PORT:-8080}:80"
+      - "${HTTP_PORT:-8080}:80"
+      - "${HTTPS_PORT:-8443}:443"
+      - "${HTTPS_PORT:-8443}:443/udp" # HTTP/3
+    volumes:
+      # Certificates and ACME account; losing them means re-issuing, which
+      # Let's Encrypt rate-limits.
+      - caddy_data:/data
+      - caddy_config:/config
     depends_on:
       gateway:
         condition: service_healthy
     networks: [public, internal]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]
     restart: unless-stopped
 
 networks:
@@ -52,3 +68,5 @@ networks:
 
 volumes:
   failures:
+  caddy_data:
+  caddy_config:

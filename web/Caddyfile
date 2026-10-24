@@ -1,0 +1,52 @@
+# The public front (SPEC §7.4): serves the client, proxies /api to the
+# gateway, rate-limits analyses, and terminates TLS.
+#
+# SITE_ADDRESS=:80 (the default) serves plain HTTP. A domain, such as
+# SITE_ADDRESS=typegraph.example.com, makes Caddy fetch and renew a
+# Let's Encrypt certificate for it and redirect HTTP to HTTPS.
+
+{$SITE_ADDRESS::80} {
+	log
+	encode zstd gzip
+
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy same-origin
+	}
+
+	handle /api/analyze {
+		# Caddy is the edge, so the peer address is the client's. A typing
+		# user sends ~3 requests/s (300 ms debounce); the headroom absorbs Run
+		# presses and retries. Over the limit: 429 without a body.
+		rate_limit {
+			zone analyze {
+				key {remote_host}
+				window 5s
+				events 25
+			}
+		}
+		# 8 KiB of source, JSON-escaped, fits easily; the gateway checks the real limit.
+		request_body {
+			max_size 64KB
+		}
+		reverse_proxy gateway:8080 {
+			transport http {
+				read_timeout 10s
+			}
+		}
+	}
+
+	handle /api/* {
+		reverse_proxy gateway:8080
+	}
+
+	handle {
+		root * /srv
+		# Vite fingerprints everything under /assets.
+		@assets path /assets/*
+		header @assets Cache-Control "public, max-age=31536000, immutable"
+		header !@assets Cache-Control "no-cache"
+		try_files {path} /index.html
+		file_server
+	}
+}

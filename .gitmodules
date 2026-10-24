@@ -1,0 +1,4 @@
+[submodule "swift-syntax"]
+	path = swift-syntax
+	url = https://github.com/filip-sakel/swift-syntax.git
+	branch = typegraph-app

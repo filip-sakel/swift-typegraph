@@ -24,7 +24,7 @@ export async function analyze(revision: number, source: string): Promise<Analyze
   } catch {
     return { revision, status: controller.signal.aborted ? 'superseded' : 'offline' }
   }
-  // nginx answers these itself, without a JSON body.
+  // Caddy answers these itself, without a JSON body.
   if (response.status === 429) return { revision, status: 'rateLimited' }
   try {
     return { revision, ...(await response.json()) }
