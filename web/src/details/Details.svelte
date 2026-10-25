@@ -22,7 +22,6 @@
 
   const reasons: Record<string, string> = {
     notNominal: 'not a nominal type',
-    redeclared: 'redeclared',
     missing: 'no such member',
     notAdmitted: 'not admitted',
   }
@@ -155,17 +154,19 @@
         {/if}
       </li>
       <li>
-        Admits:
         {#if member.admits.ok && member.admits.type}
-          <span class="yes">yes</span>, {@render typeName(member.admits.type)}
+          Admits: {@render typeName(member.admits.type)}
+        {:else if member.admits.reason === 'notNominal' && member.resolvedTo}
+          Alias for: {@render typeResult(member.resolvedTo)}
+        {:else if member.admits.reason === 'redeclared'}
+          <span class="no">Redeclaration</span>
+        {:else if member.admits.reason === 'missing'}
+          <span class="no">Nonexistent</span>
         {:else}
-          <span class="no">no</span>
+          Admits: <span class="no">nothing</span>
           <span class="note">({reasons[member.admits.reason ?? ''] ?? member.admits.reason ?? 'unknown'})</span>
         {/if}
       </li>
-      {#if member.resolvedTo}
-        <li>Resolved to: {@render typeResult(member.resolvedTo)}</li>
-      {/if}
       <li>
         Dependents: {@render list(member.dependents, groupLink, 'none')}
       </li>
@@ -254,9 +255,6 @@
   .sep,
   .hint {
     color: var(--muted);
-  }
-  .yes {
-    color: var(--success);
   }
   .no {
     color: var(--error);

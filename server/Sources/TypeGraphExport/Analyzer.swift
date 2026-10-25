@@ -68,8 +68,12 @@ public enum Analyzer {
     let typeDiagnostics = exporter.diagnostics(typeResults: typeResults)
 
     // 7.
-    let violation = checkInvariants ? symbolTable.typeGraph._firstInvariantViolation(symbolTable: symbolTable) : nil
-    return AnalyzeResponse(status: .ok, graph: graph, diagnostics: typeDiagnostics, invariantViolation: violation.map { "\($0)" })
+    let violation =
+      checkInvariants
+      ? symbolTable.typeGraph._firstInvariantViolation(symbolTable: symbolTable).map { "\($0)" }
+        ?? graph.firstInvariantViolation().map { "graph: \($0)" }
+      : nil
+    return AnalyzeResponse(status: .ok, graph: graph, diagnostics: typeDiagnostics, invariantViolation: violation)
   }
 
   private static func severity(_ severity: DiagnosticSeverity) -> Diagnostic.Severity {
@@ -393,8 +397,12 @@ private struct Exporter {
     failedExtensionAnchors: [SyntaxIdentifier: String]
   ) -> [Pill] {
     var pills: [Pill] = []
+    var pillIds: Set<String> = []
+    // One pill per (group, member) pair: redeclared top-level names share the file's.
     func add(_ label: String, _ selects: Pill.Selects, from: [String], to: String?, struck: Bool = false) {
-      pills.append(Pill(id: "\(selects.id)|\(to ?? "")", label: label, selects: selects, from: from, to: to, struck: struck))
+      let id = "\(selects.id)|\(to ?? "")"
+      guard pillIds.insert(id).inserted else { return }
+      pills.append(Pill(id: id, label: label, selects: selects, from: from, to: to, struck: struck))
     }
     let groupsById = Dictionary(uniqueKeysWithValues: declGroups.map { ($0.id, $0) })
 
@@ -440,9 +448,7 @@ private struct Exporter {
         if from.isEmpty, let anchor = failedExtensionAnchors[group.id] {
           from = [anchor]
           // A plain line joins the synthesized missing node to the root.
-          if !pills.contains(where: { $0.to == anchor && $0.from == ["root"] }) {
-            add("", .init(kind: .member, id: anchor), from: ["root"], to: anchor)
-          }
+          add("", .init(kind: .member, id: anchor), from: ["root"], to: anchor)
         }
         add(dto.label, selects, from: from, to: nil, struck: true)
       case .none:
@@ -549,8 +555,11 @@ private struct Exporter {
     case .noTypeMember(let member, let base):
       dto.kind = "noTypeMember"
       dto.ranges = [lines.range(member.introducingSyntax.node)]
-      if case .nominalTypes(let types) = base, types.count == 1, case .global(let ref) = types[0].type {
-        dto.members = [memberId(base: ref.name, name: member.name.name)]
+      // Only extensions' lookups get a `missing` node (SPEC §2.1); a type annotation's names none.
+      if case .nominalTypes(let types) = base, types.count == 1, case .global(let ref) = types[0].type,
+        case let id = memberId(base: ref.name, name: member.name.name), members[id] != nil
+      {
+        dto.members = [id]
       }
     case .cannotExtendNonNominal:
       dto.kind = "cannotExtendNonNominal"

@@ -44,6 +44,34 @@
     return undefined
   }
 
+  /** A member node's tooltip, matching the details panel's admits row. */
+  function memberTip(node: LaidOutNode): string | undefined {
+    const m = node.kind === 'member' ? store.analysis?.members.get(node.id) : undefined
+    if (!m) return undefined
+    if (m.admits.ok && m.admits.type) return `Admits: ${store.typeName(m.admits.type)}`
+    if (m.admits.reason === 'notNominal' && m.resolvedTo) return `Alias for: ${resultText(m.resolvedTo)}`
+    if (m.admits.reason === 'redeclared') return 'Redeclaration'
+    if (m.admits.reason === 'missing') return 'Nonexistent'
+    return `Admits: nothing (${m.admits.reason ?? 'unknown'})`
+  }
+
+  function resultText(r: TypeResult): string {
+    switch (r.kind) {
+      case 'nominal':
+        return r.types.map((t) => store.typeName(t)).join(' or ')
+      case 'function':
+        return 'function'
+      case 'tuple':
+        return `(${r.labels.map((l) => (l ? `${l}: _` : '_')).join(', ')})`
+      case 'any':
+        return 'Any'
+      case 'metatype':
+        return `${resultText(r.base)}.Type`
+      case 'failure':
+        return r.failure.message
+    }
+  }
+
   function admittedMembers(result: TypeResult | undefined): string[] {
     if (!result) return []
     if (result.kind === 'nominal') return result.types.flatMap((t) => (t.member ? [t.member] : []))
@@ -164,6 +192,7 @@
         {/each}
         {#each current.nodes as node (node.id)}
           {@const sel = selOf(node)}
+          {@const tip = memberTip(node)}
           <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_tabindex -->
           <g
             class="node {nodeClass(node)}"
@@ -175,6 +204,7 @@
             onclick={() => onNodeClick(node)}
             onkeydown={(e) => e.key === 'Enter' && onNodeClick(node)}
           >
+            {#if tip}<title>{tip}</title>{/if}
             <rect width={node.width} height={node.height} rx={node.kind === 'pill' ? 9 : 8} />
             <text x={node.width / 2} y={node.height / 2}>{node.label}</text>
           </g>

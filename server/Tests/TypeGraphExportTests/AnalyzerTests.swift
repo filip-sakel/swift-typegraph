@@ -15,6 +15,35 @@ import TypeGraphExport
   #expect(graph.members.contains { $0.name == "C" })
 }
 
+/// Sources that once broke, or could break, the graph's ids and references.
+@Test(arguments: [
+  "struct A {}; protocol A {}",
+  "typealias A = Int; typealias A = String",
+  "struct A {}; class A {}; enum A {}; actor A {}",
+  "struct S { struct B {}; enum B {} }",
+  "struct S {}; extension S { struct B {} }; extension S { struct B {} }",
+  "struct A {}; protocol A {}; extension A { struct B {}; typealias C = B }; extension A.C {}; extension A.E {}",
+  "struct A {}; let x: A.Missing",
+  "struct A {}; extension A.Missing { struct F {} }",
+  "extension Nope {}; extension Nope {}; extension Nope.X {}",
+  "struct A { struct B {} }; typealias X = A.B; extension X {}; extension A.B.C {}",
+  "func f() { struct L {}; enum L {}; let x: L }",
+  "protocol P {}; typealias Q = P; let x: P & Q & P",
+  "typealias X = Y; typealias Y = X; extension X {}",
+  "#if FOO\nstruct A {}\n#else\nstruct A {}\n#endif\nextension A {}",
+])
+func exportInvariantsHold(source: String) throws {
+  let response = Analyzer.analyze(source: source, checkInvariants: true)
+  #expect(response.status == .ok)
+  #expect(response.invariantViolation == nil)
+}
+
+@Test func redeclaredTopLevelTypeHasOnePill() throws {
+  let response = Analyzer.analyze(source: "struct A {}\nprotocol A {}", checkInvariants: true)
+  let graph = try #require(response.graph)
+  #expect(graph.pills.filter { $0.to == "root > A" }.count == 1)
+}
+
 @Test func parseErrorsSkipLookup() {
   let response = Analyzer.analyze(source: "struct A {", checkInvariants: true)
   #expect(response.status == .parseErrors)

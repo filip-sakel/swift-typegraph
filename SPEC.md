@@ -283,6 +283,7 @@ type FailureDTO = {
 }
 ```
 IDs are semantic rather than position-based, so a selection survives re-analysis.
+Each id is unique within its kind, every id a field refers to names an entity in the graph (or `"root"` where allowed), and id lists have no repeats; the client keys nodes and lists by them.
 
 **Positions are line/column only.** The wire never carries offsets, because
 absolute offsets shift with every edit above them. swift-syntax reports UTF-8
@@ -347,7 +348,7 @@ Workers also recycle every 1,000 jobs to cap fragmentation.
 4. Resolve every `TypeSyntax` (§3.3).
 5. Read the graph through the SPI in §3.4, derive §3 and the pills (§2.2), and sort everything by source position for determinism.
 6. Turn type-resolution failures (of type syntax and of extensions' extended types) into error diagnostics with compiler-style messages, e.g. `cannot find type 'B' in scope`. Each is reported where it originates: a `nested` failure that only passes on one reported elsewhere (through an alias, a member's declaration or an enclosing failed extension) isn't repeated, and failures the resolver defers to the type checker (generic parameters, wildcards, …) aren't reported. There's no standard library, so `Int` and friends are reported too.
-7. If `CHECK_INVARIANTS=1`, run `_firstInvariantViolation(symbolTable:)`.
+7. If `CHECK_INVARIANTS=1`, run `_firstInvariantViolation(symbolTable:)`, then `Graph.firstInvariantViolation()` on the exported graph (§4.3: unique ids, references that resolve, no repeats in id lists), prefixed `graph: `.
 8. Encode JSON, length-prefix it, and write it to stdout.
 
 ### 5.5 Endpoints
