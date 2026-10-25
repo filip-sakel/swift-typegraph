@@ -272,16 +272,17 @@
   .editor :global(.cm-diagnostic-warning) {
     border-left-color: var(--warning);
   }
-  /* Padding drawn with a shadow in the tint's color, so the highlight grows
-     without shifting the monospace text around it. */
+  /* Vertical padding only: on inline text it grows the background without moving
+     anything, and the 1.6 line height leaves room for it. Any horizontal growth
+     would paint over the neighboring characters, which sit flush in monospace. */
   .editor :global(.tg-hovered) {
     background: var(--hover-tint);
-    box-shadow: 0 0 0 3px var(--hover-tint);
+    padding: 2px 0;
     border-radius: 3px;
   }
   .editor :global(.tg-selected) {
     background: var(--selection-tint);
-    box-shadow: 0 0 0 3px var(--selection-tint);
+    padding: 2px 0;
     border-radius: 3px;
   }
   /* White text on the strong tint, overriding syntax colors nested on either side of the mark. */
