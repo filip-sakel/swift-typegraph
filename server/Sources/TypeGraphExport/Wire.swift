@@ -134,7 +134,7 @@ public struct DeclGroup: Codable, Sendable {
 
 public struct Pill: Codable, Sendable {
   public struct Selects: Codable, Sendable {
-    public enum Kind: String, Codable, Sendable { case declGroup, member }
+    public enum Kind: String, Codable, Sendable { case declGroup, member, file }
     public var kind: Kind
     public var id: String
   }

@@ -9,7 +9,12 @@ let inFlight: AbortController | undefined
  * Posts one analysis request (SPEC §6.2). Starting a new request aborts the
  * previous one. Never throws: transport failures become statuses.
  */
-export async function analyze(revision: number, source: string): Promise<AnalyzeResponse> {
+export async function analyze(
+  revision: number,
+  source: string,
+  moduleName: string,
+  fileName: string,
+): Promise<AnalyzeResponse> {
   inFlight?.abort()
   const controller = new AbortController()
   inFlight = controller
@@ -18,7 +23,7 @@ export async function analyze(revision: number, source: string): Promise<Analyze
     response = await fetch('/api/analyze', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Consent': '1', 'X-Session': session },
-      body: JSON.stringify({ revision, source }),
+      body: JSON.stringify({ revision, source, moduleName, fileName }),
       signal: controller.signal,
     })
   } catch {

@@ -6,11 +6,16 @@ import SwiftParserDiagnostics
 import SwiftSyntax
 
 public enum Analyzer {
-  public static let moduleName = "MyModule"
-  public static let fileName = "main.swift"
+  public static let defaultModuleName = "MyModule"
+  public static let defaultFileName = "main.swift"
 
-  /// Runs SPEC §5.4 steps 1-6 on `source`.
-  public static func analyze(source: String, checkInvariants: Bool) -> AnalyzeResponse {
+  /// Runs SPEC §5.4 steps 1-7 on `source`.
+  public static func analyze(
+    source: String,
+    moduleName: String = defaultModuleName,
+    fileName: String = defaultFileName,
+    checkInvariants: Bool
+  ) -> AnalyzeResponse {
     let lines = LineTable(source: source)
     let tree = Parser.parse(source: source)
 
@@ -30,7 +35,7 @@ public enum Analyzer {
     }
 
     // 2-4.
-    let module = Identifier(canonicalName: "MyModule")
+    let module = Identifier(.identifier(moduleName))!
     let symbolTable = SymbolTable(
       moduleName: module,
       moduleToSources: [module: [fileName: tree]],
@@ -50,12 +55,21 @@ public enum Analyzer {
     let typeResults = syntax.typeSyntaxes.map { symbolTable.resolve(typeSyntax: Attached($0)!) }
 
     // 5.
-    var exporter = Exporter(symbolTable: symbolTable, syntax: syntax, lines: lines)
+    var exporter = Exporter(
+      symbolTable: symbolTable,
+      syntax: syntax,
+      lines: lines,
+      moduleName: moduleName,
+      fileName: fileName
+    )
     let graph = exporter.export(typeResults: typeResults)
 
     // 6.
+    let typeDiagnostics = exporter.diagnostics(typeResults: typeResults)
+
+    // 7.
     let violation = checkInvariants ? symbolTable.typeGraph._firstInvariantViolation(symbolTable: symbolTable) : nil
-    return AnalyzeResponse(status: .ok, graph: graph, invariantViolation: violation.map { "\($0)" })
+    return AnalyzeResponse(status: .ok, graph: graph, diagnostics: typeDiagnostics, invariantViolation: violation.map { "\($0)" })
   }
 
   private static func severity(_ severity: DiagnosticSeverity) -> Diagnostic.Severity {
@@ -106,6 +120,8 @@ private struct Exporter {
   let symbolTable: SymbolTable
   let syntax: SyntaxCollector
   let lines: LineTable
+  let moduleName: String
+  let fileName: String
   var graph: TypeGraph { symbolTable.typeGraph }
 
   /// `DeclGroup.id` by syntax node.
@@ -133,10 +149,12 @@ private struct Exporter {
     }
   }
 
-  init(symbolTable: SymbolTable, syntax: SyntaxCollector, lines: LineTable) {
+  init(symbolTable: SymbolTable, syntax: SyntaxCollector, lines: LineTable, moduleName: String, fileName: String) {
     self.symbolTable = symbolTable
     self.syntax = syntax
     self.lines = lines
+    self.moduleName = moduleName
+    self.fileName = fileName
   }
 
   mutating func export(typeResults: [TypeResolver.TypeResult]) -> Graph {
@@ -192,7 +210,7 @@ private struct Exporter {
     let pills = makePills(declGroups: declGroups, memberNodes: memberNodes, failedExtensionAnchors: failedExtensionAnchors)
 
     return Graph(
-      root: Graph.Root(display: Analyzer.moduleName),
+      root: Graph.Root(display: moduleName),
       members: memberNodes,
       declGroups: declGroups,
       pills: pills,
@@ -380,14 +398,9 @@ private struct Exporter {
     }
     let groupsById = Dictionary(uniqueKeysWithValues: declGroups.map { ($0.id, $0) })
 
-    // Top-level declarations hang off the module root.
+    // Top-level declarations hang off the module root through the file they're in.
     for decl in syntax.topLevelTypeDecls {
-      let member = memberOfDecl[decl.id]!
-      if let group = groupIds[decl.id] {
-        add(groupLabels[decl.id]!, .init(kind: .declGroup, id: group), from: ["root"], to: member)
-      } else {
-        add("\(declKind(decl)) \(decl.name.text)", .init(kind: .member, id: member), from: ["root"], to: member)
-      }
+      add(fileName, .init(kind: .file, id: fileName), from: ["root"], to: memberOfDecl[decl.id]!)
     }
 
     // Missing members, by the main declaration of their base type.
@@ -448,8 +461,8 @@ private struct Exporter {
     var full = name.debugDescription
     switch components[0].qualifier {
     case .internal:
-      simple.append(Analyzer.moduleName)
-      full = "\(Analyzer.moduleName).\(full)"
+      simple.append(moduleName)
+      full = "\(moduleName).\(full)"
     case .external(let module):
       simple.append(module)
     }
@@ -578,6 +591,95 @@ private struct Exporter {
       dto.children = children(nested).map(failureDTO)
     }
     return dto
+  }
+
+  // MARK: Diagnostics
+
+  /// Type-resolution failures as compiler-style errors, each reported once,
+  /// where it originates: a failure that only passes on one reported
+  /// elsewhere (through an alias, a member's declaration or an enclosing
+  /// failed extension) isn't repeated.
+  func diagnostics(typeResults: [TypeResolver.TypeResult]) -> [Diagnostic] {
+    var diagnostics: [Diagnostic] = []
+
+    func report(_ failure: Failure, at type: TypeSyntax) {
+      switch failure {
+      case .nested(.invalidBaseType(let base)):
+        // Otherwise the base is an enclosing type or extension that failed.
+        if let member = type.as(MemberTypeSyntax.self) { report(base, at: member.baseType) }
+      case .nested(.invalidComposition(let children)):
+        for (child, failure) in children { report(failure, at: child) }
+      case .nested(.invalidAliasedType), .nested(.invalidMembers):
+        break
+      default:
+        guard let (node, message) = describe(failure, at: type) else { return }
+        let range = lines.range(node)
+        if !diagnostics.contains(where: { $0.range == range && $0.message == message }) {
+          diagnostics.append(Diagnostic(range: range, severity: .error, message: message))
+        }
+      }
+    }
+
+    for (type, result) in zip(syntax.typeSyntaxes, typeResults) {
+      if case .failure(let failure) = result { report(failure, at: type) }
+    }
+    for group in syntax.declGroups {
+      guard let ext = group.as(ExtensionDeclSyntax.self) else { continue }
+      guard let state = extensionState(ext) else {
+        // Never bound: not at file scope, or in a disabled `#if`.
+        if ext.parent?.ancestorOrSelf(mapping: { $0.is(CodeBlockSyntax.self) || $0.is(MemberBlockSyntax.self) ? $0 : nil }) != nil {
+          let message = "declaration is only valid at file scope"
+          diagnostics.append(Diagnostic(range: lines.range(ext.extensionKeyword), severity: .error, message: message))
+        }
+        continue
+      }
+      if case .failure(let failure) = state.resolvedType { report(failure, at: ext.extendedType) }
+    }
+    return diagnostics.sorted { ($0.range.start.line, $0.range.start.column) < ($1.range.start.line, $1.range.start.column) }
+  }
+
+  /// Where to put a failure of `type` and what to say; `nil` for the ones
+  /// the resolver defers to the type checker.
+  private func describe(_ failure: Failure, at type: TypeSyntax) -> (Syntax, String)? {
+    let text = type.trimmedDescription
+    /// The last name in `type`, where the compiler puts lookup errors.
+    var name: Syntax {
+      if let identifier = type.as(IdentifierTypeSyntax.self) { return Syntax(identifier.name) }
+      if let member = type.as(MemberTypeSyntax.self) { return Syntax(member.name) }
+      return Syntax(type)
+    }
+    var nameText: String { name.as(TokenSyntax.self)?.text ?? text }
+
+    switch failure {
+    case .invalidNameToken(let token):
+      return (Syntax(token), "invalid type name '\(token.trimmedDescription)'")
+    case .noTypeInScope:
+      return (name, "cannot find type '\(nameText)' in scope")
+    case .cannotComposeNonClassOrProtocol:
+      return (Syntax(type), "non-protocol, non-class type '\(text)' cannot be used within a protocol-constrained type")
+    case .noTypeMember(let member, let base):
+      let node = member.introducingSyntax.node
+      let at = node.as(MemberTypeSyntax.self).map { Syntax($0.name) } ?? Syntax(node)
+      if case .nominalTypes(let types) = base, types.count == 1 {
+        return (at, "'\(member.name.name)' is not a member type of '\(typeName(types[0].type).simple)'")
+      }
+      return (at, "'\(member.name.name)' is not a member type")
+    case .cannotExtendNonNominal:
+      return (Syntax(type), "non-nominal type '\(text)' cannot be extended")
+    case .extensionNotAtFileScope(let ext):
+      return (Syntax(ext.extensionKeyword), "declaration is only valid at file scope")
+    case .partialTypeResolutionFailure(.unknownSuppressedType):
+      return (Syntax(type), "type '\(text)' cannot be suppressed")
+    case .ambiguousTypeDecl:
+      return (name, "'\(nameText)' is ambiguous for type lookup in this context")
+    case .cyclicalTypeReference:
+      return (Syntax(type), "circular reference")
+    case .cyclicalExtensionDependency(let cycle):
+      return (Syntax(type), "circular reference: resolving '\(text)' depends on type member '\(cycle.dependencyMember.name)', which an extension in the cycle introduces")
+    case .partialTypeResolutionFailure, .genericParameterOrAssociatedType, .syntaxNotInSymbolTable,
+      .syntaxInDisabledRegion, .extensionNotBoundYet, .nested:
+      return nil
+    }
   }
 
   // MARK: Ownership

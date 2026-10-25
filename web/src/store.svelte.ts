@@ -5,7 +5,7 @@
 import { analyze } from './api/client'
 import type { AnalyzeResponse, DeclGroup, Diagnostic, Graph, MemberNode, Pill, Range, TypeSyntaxInfo } from './api/types'
 
-export type Kind = 'member' | 'declGroup' | 'typeSyntax'
+export type Kind = 'member' | 'declGroup' | 'typeSyntax' | 'file'
 export interface Sel {
   kind: Kind
   id: string
@@ -17,6 +17,15 @@ export const MAX_SOURCE_BYTES = 8192
 const DEBOUNCE_MS = 300
 const CONSENT_KEY = 'typegraph.consent'
 const SIMPLIFY_KEY = 'typegraph.simplifyNames'
+const MODULE_KEY = 'typegraph.moduleName'
+export const DEFAULT_MODULE_NAME = 'MyModule'
+const FILE_KEY = 'typegraph.fileName'
+export const DEFAULT_FILE_NAME = 'main.swift'
+
+/** An ASCII Swift identifier; the gateway rejects anything else. */
+export const isValidModuleName = (name: string) => /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(name)
+/** `<stem>.swift` in ASCII letters, digits, `_`, `-` and `.`, ≤ 64 characters; the gateway rejects anything else. */
+export const isValidFileName = (name: string) => /^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,57}\.swift$/.test(name)
 
 function load(key: string): string | null {
   try {
@@ -51,7 +60,7 @@ export class Analysis {
     for (const g of graph.declGroups) this.groups.set(g.id, g)
     for (const t of graph.typeSyntaxes) this.typeSyntaxes.set(t.id, t)
     for (const p of graph.pills) {
-      const key = p.selects.kind === 'declGroup' ? p.selects.id : `member:${p.selects.id}`
+      const key = p.selects.kind === 'declGroup' ? p.selects.id : `${p.selects.kind}:${p.selects.id}`
       this.pillsByGroup.set(key, [...(this.pillsByGroup.get(key) ?? []), p])
     }
     for (let i = 0; i < source.length; i++) if (source.charCodeAt(i) === 10) this.lineStarts.push(i + 1)
@@ -76,6 +85,9 @@ export class Analysis {
         const t = this.typeSyntaxes.get(sel.id)
         return t ? [span(t.range)] : []
       }
+      case 'file':
+        // The editor outlines itself instead.
+        return []
     }
   }
 
@@ -107,6 +119,8 @@ export class Analysis {
         return this.groups.has(sel.id)
       case 'typeSyntax':
         return this.typeSyntaxes.has(sel.id)
+      case 'file':
+        return this.pillsByGroup.has(`file:${sel.id}`)
     }
   }
 }
@@ -122,6 +136,8 @@ class Store {
   consented = $state(load(CONSENT_KEY) !== null)
   aboutOpen = $state(load(CONSENT_KEY) === null)
   simplifyNames = $state(load(SIMPLIFY_KEY) !== '0')
+  moduleName = $state(load(MODULE_KEY) ?? DEFAULT_MODULE_NAME)
+  fileName = $state(load(FILE_KEY) ?? DEFAULT_FILE_NAME)
 
   /** The latest successful analysis; kept (dimmed) while newer input fails. */
   analysis = $state.raw<Analysis | undefined>()
@@ -158,6 +174,24 @@ class Store {
     save(SIMPLIFY_KEY, on ? '1' : '0')
   }
 
+  /** Re-analyzes under the new name, debounced like an edit. */
+  setModuleName(name: string) {
+    if (!isValidModuleName(name) || name === this.moduleName) return
+    this.moduleName = name
+    save(MODULE_KEY, name)
+    clearTimeout(this.timer)
+    this.timer = setTimeout(() => this.run(), DEBOUNCE_MS)
+  }
+
+  /** Re-analyzes under the new name, debounced like an edit. */
+  setFileName(name: string) {
+    if (!isValidFileName(name) || name === this.fileName) return
+    this.fileName = name
+    save(FILE_KEY, name)
+    clearTimeout(this.timer)
+    this.timer = setTimeout(() => this.run(), DEBOUNCE_MS)
+  }
+
   edit(source: string) {
     this.source = source
     this.stale = true
@@ -181,7 +215,7 @@ class Store {
     const source = this.source
     this.onSend?.(revision)
     this.activity = 'running'
-    const response = await analyze(revision, source)
+    const response = await analyze(revision, source, this.moduleName, this.fileName)
     if (response.revision !== this.revision) return
     this.receive(response, source)
   }
@@ -193,7 +227,8 @@ class Store {
       case 'ok': {
         const analysis = new Analysis(response.revision ?? this.revision, source, response.graph!)
         this.analysis = analysis
-        this.diagnostics = []
+        // Type-resolution failures.
+        this.diagnostics = response.diagnostics ?? []
         this.stale = false
         this.activity = response.invariantViolation ? 'failed' : 'ok'
         if (this.selected && !analysis.has(this.selected)) this.selected = undefined
@@ -270,7 +305,7 @@ class Store {
 
   /** The display name of a type, per the Settings toggle. */
   typeName(t: { full: string; simple: string } | undefined): string {
-    if (!t) return this.analysis?.graph.root.display ?? 'MyModule'
+    if (!t) return this.analysis?.graph.root.display ?? this.moduleName
     return this.simplifyNames ? t.simple : t.full
   }
 

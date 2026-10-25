@@ -54,6 +54,24 @@ let failureLog = FailureLog(path: environment["FAILURE_LOG", default: "/var/log/
 struct AnalyzeRequest: Codable {
   var revision: Int
   var source: String
+  /// Defaults to `MyModule` in the worker.
+  var moduleName: String?
+  /// Defaults to `main.swift` in the worker.
+  var fileName: String?
+}
+
+/// An ASCII Swift identifier, as the client's Settings field requires.
+func isValidModuleName(_ name: String) -> Bool {
+  let isHead = { (c: Character) in c == "_" || (c.isASCII && c.isLetter) }
+  guard let first = name.first, isHead(first), name.utf8.count <= 64 else { return false }
+  return name.allSatisfy { isHead($0) || ($0.isASCII && $0.isNumber) }
+}
+
+/// `<stem>.swift`, as the client's Settings field requires: ASCII letters,
+/// digits, `_`, `-` and `.`, not starting with `.`, ≤ 64 characters.
+func isValidFileName(_ name: String) -> Bool {
+  guard name.hasSuffix(".swift"), name.utf8.count > 6, name.utf8.count <= 64, !name.hasPrefix(".") else { return false }
+  return name.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || "_-.".contains($0)) }
 }
 
 /// The fields of a worker response the gateway looks at.
@@ -101,7 +119,10 @@ router.post("/api/analyze") { request, _ -> Response in
   let session = request.headers[sessionHeader] ?? UUID().uuidString
 
   let body = try await request.body.collect(upTo: 64 * 1024)
-  guard let analyze = try? JSONDecoder().decode(AnalyzeRequest.self, from: Data(body.readableBytesView)) else {
+  guard let analyze = try? JSONDecoder().decode(AnalyzeRequest.self, from: Data(body.readableBytesView)),
+    analyze.moduleName.map(isValidModuleName) ?? true,
+    analyze.fileName.map(isValidFileName) ?? true
+  else {
     return json(.badRequest, GatewayResponse(status: "badRequest"))
   }
   let revision = analyze.revision

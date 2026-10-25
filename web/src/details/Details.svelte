@@ -13,6 +13,12 @@
   const member = $derived(shown?.kind === 'member' ? analysis?.members.get(shown.id) : undefined)
   const group = $derived(shown?.kind === 'declGroup' ? analysis?.groups.get(shown.id) : undefined)
   const typeSyntax = $derived(shown?.kind === 'typeSyntax' ? analysis?.typeSyntaxes.get(shown.id) : undefined)
+  /** The file's pills lead to its top-level members. */
+  const file = $derived(
+    shown?.kind === 'file' && analysis?.has(shown)
+      ? { name: shown.id, declares: (analysis.pillsByGroup.get(`file:${shown.id}`) ?? []).flatMap((p) => (p.to ? [p.to] : [])) }
+      : undefined,
+  )
 
   const reasons: Record<string, string> = {
     notNominal: 'not a nominal type',
@@ -187,6 +193,11 @@
     <ul>
       <li>Resolved to: {@render typeResult(typeSyntax.result)}</li>
       <li>In: {@render groupLink(typeSyntax.owner)}</li>
+    </ul>
+  {:else if file}
+    <h2>File: <code>{file.name}</code></h2>
+    <ul>
+      <li>Declares: {@render list(file.declares, memberLink, 'nothing')}</li>
     </ul>
   {:else if analysis}
     <p class="hint">Put the cursor in a declaration or type, or click a node in the graph.</p>

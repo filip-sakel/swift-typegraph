@@ -64,6 +64,9 @@
       case 'declGroup':
         for (const p of analysis.pillsByGroup.get(sel.id) ?? []) lit.add(pillNodeId(p.id))
         break
+      case 'file':
+        for (const p of analysis.pillsByGroup.get(`file:${sel.id}`) ?? []) lit.add(pillNodeId(p.id))
+        break
       case 'typeSyntax':
         for (const id of admittedMembers(analysis.typeSyntaxes.get(sel.id)?.result)) lit.add(id)
         break

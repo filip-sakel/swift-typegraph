@@ -1,9 +1,16 @@
 <script lang="ts">
-  // Logo, title, About, Settings (simplify type names) and Run with a status badge.
+  // Logo, title, About, Settings (simplify type names, module and file name) and Run
+  // with a status badge.
 
-  import { store, type Activity } from '../store.svelte'
+  import { isValidFileName, isValidModuleName, store, type Activity } from '../store.svelte'
 
   let settingsOpen = $state(false)
+  /** What's typed in the module name field; applied once it's valid. */
+  let moduleDraft = $state(store.moduleName)
+  const moduleDraftValid = $derived(isValidModuleName(moduleDraft))
+  /** Likewise for the file name field. */
+  let fileDraft = $state(store.fileName)
+  const fileDraftValid = $derived(isValidFileName(fileDraft))
 
   const badges: Record<Activity, { label: string; title: string }> = {
     idle: { label: '', title: 'Not analyzed yet' },
@@ -48,7 +55,37 @@
             Simplify type names
           </label>
           <p>
-            Shows <code>MyModule.A</code> instead of <code>MyModule._(main.swift)::A</code>.
+            Shows <code>{store.moduleName}.A</code> instead of <code>{store.moduleName}._({store.fileName})::A</code>.
+          </p>
+          <label class="field">
+            Module name
+            <input
+              type="text"
+              spellcheck="false"
+              autocomplete="off"
+              bind:value={moduleDraft}
+              aria-invalid={!moduleDraftValid}
+              oninput={(e) => store.setModuleName(e.currentTarget.value)}
+              onblur={() => (moduleDraft = store.moduleName)}
+            />
+          </label>
+          <p class:invalid={!moduleDraftValid}>
+            {moduleDraftValid ? 'The module the code is compiled in.' : 'Letters, digits and _, not starting with a digit.'}
+          </p>
+          <label class="field">
+            File name
+            <input
+              type="text"
+              spellcheck="false"
+              autocomplete="off"
+              bind:value={fileDraft}
+              aria-invalid={!fileDraftValid}
+              oninput={(e) => store.setFileName(e.currentTarget.value)}
+              onblur={() => (fileDraft = store.fileName)}
+            />
+          </label>
+          <p class:invalid={!fileDraftValid}>
+            {fileDraftValid ? 'The file the code is in.' : 'Ends in .swift; letters, digits, _, - and ., not starting with .'}
           </p>
         </div>
       {/if}
@@ -150,6 +187,27 @@
     margin: 6px 0 0;
     color: var(--muted);
     font-size: 13px;
+  }
+  .popover .field {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+    margin-top: 14px;
+  }
+  .field input {
+    padding: 4px 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 14px;
+  }
+  .field input[aria-invalid='true'] {
+    border-color: var(--error);
+  }
+  .popover p.invalid {
+    color: var(--error);
   }
   code {
     font-family: var(--mono);

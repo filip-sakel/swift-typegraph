@@ -74,7 +74,7 @@ up together.
 
 | Pill | From | To | Label |
 |---|---|---|---|
-| Top-level declaration | module root | its own member node | the declaration: `struct A`, `typealias T` |
+| Top-level declaration | module root | its own member node | the file name: `main.swift`. It selects the file, not the declaration |
 | Member of a main declaration | the member node that admits the base type | the member | the main declaration: `struct A` |
 | Member of a bound extension | the extension's **dependencies** (the member nodes it looked up); if it has none, the member node that admits the resolved type | the member | `extension A.C` |
 | Missing member | the member node that admits the base type | the `missing` member | the base type's **main declaration**: `struct A` "contains" the missing member |
@@ -179,14 +179,16 @@ dictionary it iterates by source position to keep its output deterministic.
 type AnalyzeRequest = {
   revision: number        // client-monotonic; echoed back
   source: string          // ≤ 8 KiB UTF-8, checked on the server
+  moduleName?: string     // default "MyModule"; an ASCII identifier of ≤ 64 characters, else `badRequest`
+  fileName?: string       // default "main.swift"; `<stem>.swift` of ASCII letters, digits, `_`, `-`, `.`, not starting with `.`, ≤ 64 characters, else `badRequest`
 }
 ```
-The module name is fixed (`MyModule`), and so is the file name (`main.swift`).
+The module and file names come from Settings (§6.1).
 
 ### 4.2 Response
 ```ts
 type AnalyzeResponse =
-  | { revision: number; status: "ok"; graph: Graph; stats: Stats; invariantViolation?: string }
+  | { revision: number; status: "ok"; graph: Graph; diagnostics: Diagnostic[]; stats: Stats; invariantViolation?: string } // type-resolution errors (§5.4)
   | { revision: number; status: "parseErrors"; diagnostics: Diagnostic[] }   // lookup not run
   | { revision: number; status: "timeLimit" | "memoryLimit"; limit: number }
   | { revision: number; status: "internalError"; message: string; reportId: string } // fatalError/precondition text from stderr
@@ -255,7 +257,7 @@ type DeclGroup = {
 type Pill = {
   id: string
   label: string                           // "extension A.C", "struct A", "typealias T"
-  selects: { kind: "declGroup" | "member"; id: string } // top-level typealias pills select the member
+  selects: { kind: "declGroup" | "member" | "file"; id: string } // module root pills select the file (id: the file name)
   from: string[]                          // MemberNode.id[] or "root" (§2.2)
   to: string | null                       // null for failed extensions and empty groups
                                           // label "": a plain line, e.g. root → a missing top-level member
@@ -340,12 +342,13 @@ Workers also recycle every 1,000 jobs to cap fragmentation.
 
 ### 5.4 Analysis steps (worker)
 1. Parse with `Parser.parse(source:)` and run `ParseDiagnosticsGenerator.diagnostics(for:)`. If there are any errors, return `parseErrors` and stop. Lookup doesn't run on a tree with syntax errors.
-2. `SymbolTable(moduleName: "MyModule", moduleToSources: ["MyModule": ["main.swift": tree]], buildConfiguration: StaticBuildConfiguration(…))`.
+2. `SymbolTable(moduleName: M, moduleToSources: [M: [F: tree]], buildConfiguration: StaticBuildConfiguration(…))`, where `M` and `F` are the request's `moduleName` and `fileName`.
 3. Call `resolve(nominalTypeDecl:)` on every nominal type declaration, then `admitExtensions(accessibleFrom:)`.
 4. Resolve every `TypeSyntax` (§3.3).
 5. Read the graph through the SPI in §3.4, derive §3 and the pills (§2.2), and sort everything by source position for determinism.
-6. If `CHECK_INVARIANTS=1`, run `_firstInvariantViolation(symbolTable:)`.
-7. Encode JSON, length-prefix it, and write it to stdout.
+6. Turn type-resolution failures (of type syntax and of extensions' extended types) into error diagnostics with compiler-style messages, e.g. `cannot find type 'B' in scope`. Each is reported where it originates: a `nested` failure that only passes on one reported elsewhere (through an alias, a member's declaration or an enclosing failed extension) isn't repeated, and failures the resolver defers to the type checker (generic parameters, wildcards, …) aren't reported. There's no standard library, so `Int` and friends are reported too.
+7. If `CHECK_INVARIANTS=1`, run `_firstInvariantViolation(symbolTable:)`.
+8. Encode JSON, length-prefix it, and write it to stdout.
 
 ### 5.5 Endpoints
 - `POST /api/analyze` (§4)
@@ -357,7 +360,10 @@ Workers also recycle every 1,000 jobs to cap fragmentation.
 
 ### 6.1 Layout (per the prototypes)
 - **Header**: logo, "Swift TypeGraph", **About**, **Settings**, and **Run** with a status badge (green check for ok, spinner while in flight, red for a crash or limit, amber for syntax errors, grey when offline). Run forces an immediate analysis.
-- **Settings**: one toggle, **Simplify type names** (on by default, remembered in `localStorage`). When it's on, names show as `MyModule.A` (`TypeName.simple`). When it's off, they show as `MyModule._(main.swift)::A` (`TypeName.full`). It affects node labels and the details panel. Pill labels are source text, so it doesn't affect them.
+- **Settings** (all remembered in `localStorage`):
+  - **Simplify type names** (on by default). When it's on, names show as `MyModule.A` (`TypeName.simple`). When it's off, they show as `MyModule._(main.swift)::A` (`TypeName.full`). It affects node labels and the details panel. Pill labels are source text or file names, so it doesn't affect them.
+  - **Module name** (`MyModule` by default). Changing it re-analyzes, debounced like an edit. Invalid names (not an ASCII identifier) are flagged and not applied.
+  - **File name** (`main.swift` by default). It appears in full type names and labels the module root's pills. Same behavior as the module name; invalid names (§4.1) are flagged and not applied.
 - **Left**: code editor with line numbers.
 - **Right**: graph view with pan and zoom.
 - **Bottom**: details panel (`Syntax: <label>` plus a bullet list).
@@ -366,7 +372,8 @@ Workers also recycle every 1,000 jobs to cap fragmentation.
 - Debounce **300 ms** after the last edit.
 - Each request carries `revision = ++counter`. Starting a new request aborts the previous one (`AbortController`), and any response whose `revision` isn't the latest is ignored.
 - **Stale ranges**: until the new response arrives, the editor keeps the previous decorations and maps them through edits with CodeMirror's `ChangeSet.mapPos`, so highlights don't jump. The graph and details stay as they were, slightly dimmed.
-- **Syntax errors** (`parseErrors`): the diagnostics show as editor squiggles with hover messages (`@codemirror/lint`). The graph and details keep the last successful analysis, dimmed, with a note: "Showing the last valid analysis: 2 syntax errors".
+- **Diagnostics** show as editor squiggles with hover messages (`@codemirror/lint`): type-resolution errors with every `ok` response, syntax errors with `parseErrors`.
+- **Syntax errors** (`parseErrors`): the graph and details keep the last successful analysis, dimmed, with a note: "Showing the last valid analysis: 2 syntax errors".
 - The editor footer shows a byte counter (`5.2 / 8 KiB`). Over the limit, analysis pauses and the counter turns red.
 
 ### 6.3 Graph rendering
@@ -376,7 +383,7 @@ Workers also recycle every 1,000 jobs to cap fragmentation.
 - Relayout on every response, animating node positions by id so the graph doesn't jump around.
 
 ### 6.4 Selection model
-One store holds `hovered` and `selected` (each `{ kind: "member" | "declGroup" | "typeSyntax"; id }`) and a back/forward history (`Alt+←/→`).
+One store holds `hovered` and `selected` (each `{ kind: "member" | "declGroup" | "typeSyntax" | "file"; id }`) and a back/forward history (`Alt+←/→`).
 
 | Trigger | Effect |
 |---|---|
@@ -389,6 +396,7 @@ Highlight targets:
 - **Member:** all its declarations (several if it's ambiguous).
 - **Declaration group:** its full range (the prototypes highlight the whole `extension A.C { … }`), plus every pill of that group.
 - **Type syntax:** its range. In the graph, the members that admit its resolved types are outlined.
+- **File:** the whole editor gets a border (dashed when hovered, solid when selected) instead of a range highlight, plus every pill from the module root.
 
 ### 6.5 Details panel content
 Every name in **bold** below is a link.
@@ -399,6 +407,8 @@ Every name in **bold** below is a link.
   `Syntax: extension A.C` · Dependencies: **MyModule.A > B**, **MyModule.A > C** (`missing` ones suffixed `(missing)`) · Resolved to: **MyModule.A.B**, or the failure tree (a `message` per node, with `ranges`/`members` as links) · Introduces: **…**
 - **Type syntax**:
   `Syntax: A.C` · Resolved to: **…** · In: **owner declaration**
+- **File**:
+  `File: main.swift` · Declares: **MyModule > A**, … (its top-level members)
 
 Link targets: a member link selects that member node. A type link selects
 `TypeName.member` (the member that admits it). Failure ranges show as line

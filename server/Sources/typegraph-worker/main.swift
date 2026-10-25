@@ -1,9 +1,10 @@
 // Analyzes one job at a time (SPEC §5.1).
 //
 // Protocol: the gateway writes `UInt32 little-endian length + JSON {"source": …}`
-// to stdin; the worker answers with `UInt32 length + AnalyzeResponse JSON` on
-// stdout. Assertion and `fatalError` messages go to stderr and the process
-// dies; the gateway reports and logs those.
+// (plus optional `"moduleName"` and `"fileName"`) to stdin; the worker answers with
+// `UInt32 length + AnalyzeResponse JSON` on stdout. Assertion and `fatalError`
+// messages go to stderr and the process dies; the gateway reports and logs
+// those.
 //
 // `typegraph-worker --once < file.swift` prints the response for one file.
 
@@ -26,17 +27,24 @@ import TypeGraphExport
 struct Job: Decodable {
   var revision: Int?
   var source: String
+  var moduleName: String?
+  var fileName: String?
 }
 
 let environment = ProcessInfo.processInfo.environment
 let checkInvariants = environment["CHECK_INVARIANTS", default: "1"] != "0"
 let maxMemoryKiB = Int(environment["MAX_MEMORY_KIB", default: "10240"]) ?? 10240
 
-func analyze(_ source: String, revision: Int? = nil) -> AnalyzeResponse {
+func analyze(_ source: String, moduleName: String? = nil, fileName: String? = nil, revision: Int? = nil) -> AnalyzeResponse {
   resetPeakMemory()
   let baseline = peakMemoryKiB()
   let start = ContinuousClock.now
-  var response = Analyzer.analyze(source: source, checkInvariants: checkInvariants)
+  var response = Analyzer.analyze(
+    source: source,
+    moduleName: moduleName ?? Analyzer.defaultModuleName,
+    fileName: fileName ?? Analyzer.defaultFileName,
+    checkInvariants: checkInvariants
+  )
   let elapsed = ContinuousClock.now - start
   let used = max(0, peakMemoryKiB() - baseline)
   if used > maxMemoryKiB {
@@ -153,7 +161,7 @@ while let header = readExactly(4) {
   guard let payload = readExactly(length) else { break }
   let response: AnalyzeResponse
   if let job = try? JSONDecoder().decode(Job.self, from: payload) {
-    response = analyze(job.source, revision: job.revision)
+    response = analyze(job.source, moduleName: job.moduleName, fileName: job.fileName, revision: job.revision)
   } else {
     writeAll(2, Data("Malformed job\n".utf8))
     exit(2)

@@ -169,10 +169,16 @@
   })
 </script>
 
-<div class="editor" bind:this={host}></div>
+<div
+  class="editor"
+  class:file-selected={store.selected?.kind === 'file'}
+  class:file-hovered={store.hovered?.kind === 'file'}
+  bind:this={host}
+></div>
 
 <style>
   .editor {
+    position: relative;
     height: 100%;
     overflow: hidden;
   }
@@ -183,6 +189,30 @@
   .editor :global(.cm-editor.cm-focused) {
     outline: none;
   }
+  /* The whole file: a border instead of a highlight, overlaid so the gutter
+     (its own stacking layer) can't cover it. */
+  .editor.file-hovered::after,
+  .editor.file-selected::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    /* Above the gutter (200), below panels and tooltips (300+). */
+    z-index: 250;
+    pointer-events: none;
+    border: 2px dashed var(--accent);
+    /* Follows the rounded corner of the panes' frame (App.svelte: 14px minus its 1px border). */
+    border-top-left-radius: 13px;
+  }
+  .editor.file-selected::after {
+    border-style: solid;
+  }
+  @media (max-width: 760px) {
+    /* Stacked layout: the editor spans the top of the frame. */
+    .editor.file-hovered::after,
+    .editor.file-selected::after {
+      border-top-right-radius: 13px;
+    }
+  }
   .editor :global(.cm-scroller) {
     font-family: var(--mono);
     line-height: 1.6;
@@ -191,6 +221,29 @@
     background: var(--panel);
     border-right: 1px solid var(--border);
     color: var(--muted);
+  }
+  /* Diagnostics: squiggles in the theme's colors, and their hover tooltips. */
+  .editor :global(.cm-lintRange-error),
+  .editor :global(.cm-lintRange-warning) {
+    background-image: none;
+    text-decoration: wavy underline var(--error);
+    text-decoration-skip-ink: none;
+    text-underline-offset: 3px;
+  }
+  .editor :global(.cm-lintRange-warning) {
+    text-decoration-color: var(--warning);
+  }
+  .editor :global(.cm-tooltip) {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--text);
+  }
+  .editor :global(.cm-diagnostic-error) {
+    border-left-color: var(--error);
+  }
+  .editor :global(.cm-diagnostic-warning) {
+    border-left-color: var(--warning);
   }
   .editor :global(.tg-hovered) {
     background: var(--hover-tint);

@@ -67,7 +67,7 @@ export interface DeclGroup {
 export interface Pill {
   id: string
   label: string
-  selects: { kind: 'declGroup' | 'member'; id: string }
+  selects: { kind: 'declGroup' | 'member' | 'file'; id: string }
   /** `MemberNode.id`s or `"root"`. */
   from: string[]
   to?: string
