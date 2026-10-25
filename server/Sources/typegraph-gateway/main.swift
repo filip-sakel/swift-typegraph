@@ -22,6 +22,8 @@ let maxSourceBytes = setting("MAX_SOURCE_BYTES", 8192)
 let maxTimeMs = setting("MAX_TIME_MS", 500)
 let maxMemoryKiB = setting("MAX_MEMORY_KIB", 10240)
 let port = setting("PORT", 8080)
+// Set in the container: listen on this Unix socket instead of HOST:PORT.
+let socketPath = environment["SOCKET_PATH"]
 // Next to our own binary. Not argv[0]: it has no directory when found via PATH.
 let workerExecutable = environment["WORKER_PATH"].map { URL(fileURLWithPath: $0) }
   ?? (Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0]))
@@ -136,6 +138,13 @@ router.post("/api/analyze") { request, _ -> Response in
 
 let app = Application(
   router: router,
-  configuration: .init(address: .hostname(environment["HOST", default: "0.0.0.0"], port: port))
+  configuration: .init(
+    address: socketPath.map { .unixDomainSocket(path: $0) }
+      ?? .hostname(environment["HOST", default: "0.0.0.0"], port: port)
+  ),
+  onServerRunning: { [socketPath] _ in
+    // Caddy connects as another user and has no CAP_DAC_OVERRIDE.
+    if let socketPath { chmod(socketPath, 0o666) }
+  }
 )
 try await app.runService()

@@ -9,9 +9,12 @@ Let's Encrypt certificate on its own, so TLS setup is just a domain plus a
 
 - **Linux on the architecture you'll build for** (x86_64 or arm64). Build on the
   server itself; building Swift through QEMU emulation is very slow.
-- **Docker Engine with the compose plugin**, rootful (the default install).
-  Rootless Docker or Podman forward connections through a userland proxy, so
-  every client shows up with the same address and they all share one rate limit.
+- **Docker Engine with the compose plugin** (rootful, the default install), or
+  **rootless Podman 5 or later** with `docker-compose` as its compose provider. The rate
+  limit is per client address, so published ports must keep it: rootful
+  Docker's bridge does, and with Podman `scripts/up.sh` runs `web` with pasta
+  networking, which does too (see README, Podman). Rootless Docker's default
+  port driver doesn't, and isn't supported.
 - **About 4 GB RAM and 2 CPUs.** The release build of swift-syntax is the peak.
   At run time the gateway is capped at 2 GB, and each worker uses one core while
   it analyzes.
@@ -22,8 +25,9 @@ Let's Encrypt certificate on its own, so TLS setup is just a domain plus a
   [filip-sakel/swift-syntax](https://github.com/filip-sakel/swift-syntax), so
   clone with `--recurse-submodules` (or run `git submodule update --init` in an
   existing clone).
-- **Inbound 80/tcp, 443/tcp and 443/udp** (HTTP/3). Let's Encrypt needs port 80
-  or 443 reachable to issue the certificate.
+- **Inbound 80/tcp, 443/tcp and 443/udp** (HTTP/3), in the cloud provider's
+  firewall and, with Podman, the host's (Setup, below). Let's Encrypt needs
+  port 80 or 443 reachable to issue the certificate.
 - **A `.env` file** next to `compose.yaml` (below).
 - **A DNS record** for the domain (below).
 
@@ -34,9 +38,9 @@ At your DNS provider, add an `A` record from the name (say
 `dig +short typegraph.example.com` prints that address before the first start,
 or certificate issuance fails and Caddy retries with backoff.
 
-Skip the `AAAA` record unless you've enabled IPv6 in Docker. Without that,
-Docker forwards IPv6 clients through `docker-proxy`, and they all share one rate
-limit.
+With Docker, skip the `AAAA` record unless you've enabled IPv6 in Docker.
+Without that, Docker forwards IPv6 clients through `docker-proxy`, and they all
+share one rate limit. Podman's pasta forwards IPv6 with the client's address.
 
 ## Setup
 
@@ -53,6 +57,28 @@ EOF
 scripts/up.sh      # → TypeGraph is up at https://typegraph.example.com
 ```
 
+With rootless Podman, four more steps, once:
+
+```sh
+# Let your user bind 80 and 443.
+echo 'net.ipv4.ip_unprivileged_port_start=80' | sudo tee /etc/sysctl.d/90-unprivileged-ports.conf
+sudo sysctl --system
+# Open them in the firewall (firewalld; with ufw: ufw allow 80,443/tcp && ufw allow 443/udp).
+sudo firewall-cmd --permanent --add-service=http --add-service=https --add-port=443/udp
+sudo firewall-cmd --reload
+# Keep your containers running after you log out, and restart them at boot
+# (rootless podman has no daemon to honor `restart: unless-stopped`).
+sudo loginctl enable-linger "$USER"
+systemctl --user enable --now podman.socket podman-restart.service
+```
+
+The firewall step is Podman-only. pasta publishes ports as ordinary sockets
+owned by your user, so the host firewall filters them like any other service.
+Rootful Docker writes its own NAT rules for published ports, and those bypass
+firewalld and ufw: the ports are open without this step, and closing them
+there doesn't block them (Docker's docs filter them in the `DOCKER-USER` chain
+instead).
+
 The first build takes several minutes. `WORKERS` is how many analyses can run
 at once; one per core is a good default. `BUG_REPORT_URL` is compiled into
 the client, so changing it means rebuilding, which `scripts/up.sh` does.
@@ -63,6 +89,8 @@ case every request comes from the proxy's address, so the per-IP rate limit
 needs `trusted_proxies` in the Caddyfile and `{client_ip}` as its key.
 
 ## Operating
+
+With Podman, write `podman compose` for `docker compose`.
 
 ```sh
 git pull --recurse-submodules && scripts/up.sh # update

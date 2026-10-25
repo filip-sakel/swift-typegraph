@@ -39,6 +39,15 @@ Podman differences that are already handled:
   `compose.yaml` declares the gateway's healthcheck itself (`web` waits on it).
 - **Rootless ports**: rootless podman can't bind ports below 1024 unless you
   lower `net.ipv4.ip_unprivileged_port_start`, hence the 8080/8443 defaults.
+- **Client addresses**: on compose's bridge networks, rootless podman forwards
+  ports through `rootlessport`, so Caddy would see one address for everyone
+  and apply one rate limit to all of them. `web` runs with pasta networking
+  instead (`WEB_NETWORK_MODE=pasta`, which `scripts/up.sh` sets for podman;
+  set it yourself when running `podman compose` by hand), and reaches the
+  gateway through a Unix socket rather than a network.
+- **Firewall**: pasta's published ports are ordinary sockets, so the host
+  firewall applies to them, unlike Docker's. Reaching the app from another
+  machine may need the port opened (DEPLOY.md, Setup).
 
 ### Settings
 
@@ -50,6 +59,7 @@ Set these in the environment or in a `.env` file next to `compose.yaml`.
 | `HTTPS_PORT` | `8443` | Host port for HTTPS and HTTP/3 (Caddy's port 443) |
 | `SITE_ADDRESS` | `:80` | `:80` serves plain HTTP; a domain turns on automatic HTTPS (DEPLOY.md) |
 | `WORKERS` | `4` | Analyzer processes |
+| `WEB_NETWORK_MODE` | `bridge` (`pasta` from `scripts/up.sh` with podman) | Caddy's network mode; must keep client addresses for the rate limit |
 | `BUG_REPORT_URL` | (none) | Enables the "File a bug report" link, e.g. `https://github.com/you/repo/issues/new` |
 
 ### Operating

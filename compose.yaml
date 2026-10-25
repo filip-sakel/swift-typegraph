@@ -16,8 +16,10 @@ services:
     volumes:
       # failures.jsonl: every failed analysis with its input (see About).
       - failures:/var/log/typegraph
-    # Only Caddy (web) can reach it, and it can't reach anything.
-    networks: [internal]
+      - gateway_socket:/run/typegraph
+    # No network: Caddy (web) reaches it through the socket, and it can't
+    # reach anything.
+    network_mode: none
     read_only: true
     tmpfs: [/tmp]
     cap_drop: [ALL]
@@ -26,7 +28,7 @@ services:
     mem_limit: 2g
     # Repeated from the Dockerfile: podman's default OCI image format drops HEALTHCHECK.
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8080/api/healthz"]
+      test: ["CMD", "curl", "-fsS", "--unix-socket", "/run/typegraph/gateway.sock", "http://localhost/api/healthz"]
       interval: 15s
       timeout: 3s
       start_period: 10s
@@ -41,6 +43,11 @@ services:
     environment:
       # ":80" serves plain HTTP; a domain turns on automatic HTTPS.
       SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+    # The rate limit is per client address, so published ports must keep it.
+    # Rootful docker's "bridge" does. Rootless podman needs "pasta": on bridge
+    # networks it proxies ports through rootlessport, and every client shows
+    # up as the container's own address. scripts/up.sh picks pasta for podman.
+    network_mode: ${WEB_NETWORK_MODE:-bridge}
     ports:
       - "${HTTP_PORT:-8080}:80"
       - "${HTTPS_PORT:-8443}:443"
@@ -50,10 +57,10 @@ services:
       # Let's Encrypt rate-limits.
       - caddy_data:/data
       - caddy_config:/config
+      - gateway_socket:/run/typegraph:ro
     depends_on:
       gateway:
         condition: service_healthy
-    networks: [public, internal]
     read_only: true
     tmpfs: [/tmp]
     cap_drop: [ALL]
@@ -61,12 +68,8 @@ services:
     security_opt: ["no-new-privileges:true"]
     restart: unless-stopped
 
-networks:
-  public: {}
-  internal:
-    internal: true
-
 volumes:
   failures:
+  gateway_socket:
   caddy_data:
   caddy_config:

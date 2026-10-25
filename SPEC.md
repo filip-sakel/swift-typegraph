@@ -478,15 +478,18 @@ running it, including Podman; [DEPLOY.md](DEPLOY.md) covers a server with a doma
 - **gateway**: `server/Dockerfile` builds on `swiftlang/swift:nightly-main-noble`
   (the engine needs a main-branch compiler, like the local toolchain) with
   `-c release -Xswiftc -DDEBUG --static-swift-stdlib`, and runs on `ubuntu:noble`
-  as a non-root user. It's only reachable from Caddy (internal network), with a
-  read-only root filesystem, no capabilities, and the failure log on the
-  `failures` volume. Env: `WORKERS` (default 4), `CHECK_INVARIANTS=1` and the
+  as a non-root user. It has no network: it listens on a Unix socket on the
+  `gateway_socket` volume, which only Caddy mounts. It has a read-only root
+  filesystem, no capabilities, and the failure log on the `failures` volume.
+  Env: `WORKERS` (default 4), `CHECK_INVARIANTS=1` and the
   three limits.
 - **web**: `web/Dockerfile` builds the client (build arg `BUG_REPORT_URL` →
   `VITE_BUG_REPORT_URL`) and a Caddy binary with the rate-limit plugin into
   `caddy:2.11.7-alpine`. `web/Caddyfile` limits `/api/analyze` to 25 requests
   per 5 s per IP (429), caps bodies at 64 KB (413), compresses, caches
-  `/assets/` as immutable, and proxies `/api/` to the gateway. `SITE_ADDRESS`
+  `/assets/` as immutable, and proxies `/api/` to the gateway's socket. Its
+  network mode is `WEB_NETWORK_MODE` (default `bridge`; `pasta` under rootless
+  podman, so Caddy sees client addresses). `SITE_ADDRESS`
   (default `:80`, plain HTTP) set to a domain turns on automatic HTTPS; the
   certificates live on the `caddy_data` volume.
 - **Architecture**: build images on the target server (`docker compose build`)

@@ -20,15 +20,15 @@ FROM docker.io/library/ubuntu:noble
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl \
  && rm -rf /var/lib/apt/lists/*
+# /run/typegraph: the socket Caddy proxies to (a volume both containers mount).
 RUN useradd --system --no-create-home typegraph \
- && mkdir -p /var/log/typegraph \
- && chown typegraph /var/log/typegraph
+ && mkdir -p /var/log/typegraph /run/typegraph \
+ && chown typegraph /var/log/typegraph /run/typegraph
 COPY --from=build /out/ /usr/local/bin/
 USER typegraph
-ENV PORT=8080 \
+ENV SOCKET_PATH=/run/typegraph/gateway.sock \
     CHECK_INVARIANTS=1 \
     FAILURE_LOG=/var/log/typegraph/failures.jsonl
-EXPOSE 8080
 HEALTHCHECK --interval=15s --timeout=3s --start-period=10s \
-  CMD curl -fsS http://localhost:8080/api/healthz || exit 1
+  CMD curl -fsS --unix-socket /run/typegraph/gateway.sock http://localhost/api/healthz || exit 1
 CMD ["typegraph-gateway"]

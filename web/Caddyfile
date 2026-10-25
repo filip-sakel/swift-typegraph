@@ -15,7 +15,8 @@
 	}
 
 	handle /api/analyze {
-		# Caddy is the edge, so the peer address is the client's. A typing
+		# Caddy is the edge, so the peer address is the client's (rootless
+		# podman: only with WEB_NETWORK_MODE=pasta, see compose.yaml). A typing
 		# user sends ~3 requests/s (300 ms debounce); the headroom absorbs Run
 		# presses and retries. Over the limit: 429 without a body.
 		rate_limit {
@@ -29,7 +30,7 @@
 		request_body {
 			max_size 64KB
 		}
-		reverse_proxy gateway:8080 {
+		reverse_proxy unix//run/typegraph/gateway.sock {
 			transport http {
 				read_timeout 10s
 			}
@@ -37,7 +38,7 @@
 	}
 
 	handle /api/* {
-		reverse_proxy gateway:8080
+		reverse_proxy unix//run/typegraph/gateway.sock
 	}
 
 	handle {
