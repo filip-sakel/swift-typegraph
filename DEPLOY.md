@@ -28,6 +28,7 @@ Let's Encrypt certificate on its own, so TLS setup is just a domain plus a
 - **Inbound 80/tcp, 443/tcp and 443/udp** (HTTP/3), in the cloud provider's
   firewall and, with Podman, the host's (Setup, below). Let's Encrypt needs
   port 80 or 443 reachable to issue the certificate.
+  - Below, we use `firewall-cmd`. On a Debian-like OS, install with `sudo apt install firewalld`.
 - **A `.env` file** next to `compose.yaml` (below).
 - **A DNS record** for the domain (below).
 
@@ -61,10 +62,12 @@ With rootless Podman, four more steps, once:
 
 ```sh
 # Let your user bind 80 and 443.
+# See: https://oneuptime.com/blog/post/2026-03-18-configure-ip-unprivileged-port-start-rootless-podman/view
 echo 'net.ipv4.ip_unprivileged_port_start=80' | sudo tee /etc/sysctl.d/90-unprivileged-ports.conf
 sudo sysctl --system
 # Open them in the firewall (firewalld; with ufw: ufw allow 80,443/tcp && ufw allow 443/udp).
-sudo firewall-cmd --permanent --add-service=http --add-service=https --add-port=443/udp
+# See: https://serverdale.com/en/kb/linux-firewall-rules
+sudo firewall-cmd --permanent --add-service=http --add-service=https --add-service=http3
 sudo firewall-cmd --reload
 # Keep your containers running after you log out, and restart them at boot
 # (rootless podman has no daemon to honor `restart: unless-stopped`).
