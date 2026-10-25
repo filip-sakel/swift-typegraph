@@ -91,6 +91,8 @@
       state: EditorState.create({
         doc: store.source,
         extensions: [
+          // Diagnostics markers left of the numbers, so the numbers sit next to the code.
+          lintGutter(),
           lineNumbers(),
           highlightActiveLineGutter(),
           history(),
@@ -99,7 +101,6 @@
           EditorState.tabSize.of(2),
           StreamLanguage.define(swift),
           syntaxHighlighting(defaultHighlightStyle),
-          lintGutter(),
           highlights,
           keymap.of([indentWithTab, ...defaultKeymap, ...historyKeymap]),
           EditorView.updateListener.of((update) => {
@@ -222,6 +223,32 @@
     border-right: 1px solid var(--border);
     color: var(--muted);
   }
+  /* A narrow diagnostics column with a smaller, centered marker. */
+  .editor :global(.cm-gutter-lint) {
+    width: 0.9em;
+  }
+  .editor :global(.cm-gutter-lint .cm-gutterElement) {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+  }
+  .editor :global(.cm-lint-marker) {
+    width: 0.65em;
+    height: 0.65em;
+  }
+  /* Errors: a thin vertical pill in the theme's color instead of the stock dot. */
+  .editor :global(.cm-lint-marker-error) {
+    content: normal;
+    width: 6px;
+    height: 0.9em;
+    border-radius: 3px;
+    background: var(--error);
+  }
+  /* Numbers close to the code: less room on the left, a little more on the right. */
+  .editor :global(.cm-lineNumbers .cm-gutterElement) {
+    padding: 0 6px 0 2px;
+  }
   /* Diagnostics: squiggles in the theme's colors, and their hover tooltips. */
   .editor :global(.cm-lintRange-error),
   .editor :global(.cm-lintRange-warning) {
@@ -245,12 +272,21 @@
   .editor :global(.cm-diagnostic-warning) {
     border-left-color: var(--warning);
   }
+  /* Padding drawn with a shadow in the tint's color, so the highlight grows
+     without shifting the monospace text around it. */
   .editor :global(.tg-hovered) {
     background: var(--hover-tint);
+    box-shadow: 0 0 0 3px var(--hover-tint);
     border-radius: 3px;
   }
   .editor :global(.tg-selected) {
     background: var(--selection-tint);
+    box-shadow: 0 0 0 3px var(--selection-tint);
     border-radius: 3px;
+  }
+  /* White text on the strong tint, overriding syntax colors nested on either side of the mark. */
+  .editor :global(.tg-selected),
+  .editor :global(.tg-selected *) {
+    color: #fff;
   }
 </style>
