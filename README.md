@@ -1,19 +1,20 @@
 # Swift TypeGraph
 
 A web app that visualizes the `TypeGraph` that SwiftLexicalLookup builds for
-a Swift snippet. The design is in [SPEC.md](SPEC.md); putting it on a server
-with a domain is in [DEPLOY.md](DEPLOY.md).
+a Swift snippet. The design is in [SPEC.md](SPEC.md); running it on a server
+behind a public proxy is in [DEPLOY.md](DEPLOY.md).
 
 ## Run with Docker or Podman
 
 ```sh
-scripts/up.sh                  # builds, starts, prints "TypeGraph is up at http://localhost:8080"
+scripts/up.sh                  # builds, starts, prints "TypeGraph is up at http://localhost:4000"
 HTTP_PORT=9000 scripts/up.sh   # another host port
 ```
 
 `scripts/up.sh` runs `docker compose up -d --build` when the docker daemon is
 reachable and `podman compose up -d --build` otherwise, then prints the URL
-from `compose port web 80`. Set `COMPOSE` to choose, e.g.
+from `compose port web 4000`. It listens on loopback only, in plain HTTP.
+Set `COMPOSE` to choose, e.g.
 `COMPOSE="sudo docker compose"` where docker needs root.
 
 The first build compiles swift-syntax in release mode and takes several
@@ -28,7 +29,7 @@ Docker-compatible API socket. The script starts it; by hand:
 ```sh
 systemctl --user start podman.socket        # once per boot, or `enable` it
 podman compose up -d --build
-podman compose port web 80                  # → 0.0.0.0:8080
+podman compose port web 4000                # → 127.0.0.1:4000
 ```
 
 Podman differences that are already handled:
@@ -37,17 +38,6 @@ Podman differences that are already handled:
   Dockerfiles use fully qualified names (`docker.io/...`).
 - **Healthchecks**: podman builds OCI images, which drop `HEALTHCHECK`, so
   `compose.yaml` declares the gateway's healthcheck itself (`web` waits on it).
-- **Rootless ports**: rootless podman can't bind ports below 1024 unless you
-  lower `net.ipv4.ip_unprivileged_port_start`, hence the 8080/8443 defaults.
-- **Client addresses**: on compose's bridge networks, rootless podman forwards
-  ports through `rootlessport`, so Caddy would see one address for everyone
-  and apply one rate limit to all of them. `web` runs with pasta networking
-  instead (`WEB_NETWORK_MODE=pasta`, which `scripts/up.sh` sets for podman;
-  set it yourself when running `podman compose` by hand), and reaches the
-  gateway through a Unix socket rather than a network.
-- **Firewall**: pasta's published ports are ordinary sockets, so the host
-  firewall applies to them, unlike Docker's. Reaching the app from another
-  machine may need the port opened (DEPLOY.md, Setup).
 
 ### Settings
 
@@ -55,25 +45,19 @@ Set these in the environment or in a `.env` file next to `compose.yaml`.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `HTTP_PORT` | `8080` | Host port for HTTP (Caddy's port 80) |
-| `HTTPS_PORT` | `8443` | Host port for HTTPS and HTTP/3 (Caddy's port 443) |
-| `SITE_ADDRESS` | `:80` | `:80` serves plain HTTP; a domain turns on automatic HTTPS (DEPLOY.md) |
+| `HTTP_PORT` | `4000` | Loopback port for HTTP |
 | `WORKERS` | `4` | Analyzer processes |
-| `WEB_NETWORK_MODE` | `bridge` (`pasta` from `scripts/up.sh` with podman) | Caddy's network mode; must keep client addresses for the rate limit |
 | `BUG_REPORT_URL` | (none) | Enables the "File a bug report" link, e.g. `https://github.com/you/repo/issues/new` |
 
 ### Operating
 
 ```sh
 docker compose logs -f gateway     # or: podman compose logs -f gateway
-docker compose down                # stop; -v also drops the failure log and certificates
+docker compose down                # stop; -v also drops the failure log
 docker compose exec gateway cat /var/log/typegraph/failures.jsonl
 ```
 
 ## Develop
-
-The dev gateway uses port 8080, the same as the compose default, so stop the
-stack or start it with another `HTTP_PORT`.
 
 ```sh
 cd server && swift build -c release -Xswiftc -DDEBUG && CHECK_INVARIANTS=1 swift run -c release typegraph-gateway   # :8080

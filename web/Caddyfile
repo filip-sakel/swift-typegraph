@@ -1,11 +1,14 @@
-# The public front (SPEC §7.4): serves the client, proxies /api to the
-# gateway, rate-limits analyses, and terminates TLS.
-#
-# SITE_ADDRESS=:80 (the default) serves plain HTTP. A domain, such as
-# SITE_ADDRESS=typegraph.example.com, makes Caddy fetch and renew a
-# Let's Encrypt certificate for it and redirect HTTP to HTTPS.
+# The private proxy (SPEC §7.4): serves the client and proxies /api to the
+# gateway, in plain HTTP on :4000. TLS and rate limiting are the public
+# proxy's (DEPLOY.md).
 
-{$SITE_ADDRESS::80} {
+{
+	admin off
+	auto_https off
+	persist_config off
+}
+
+:4000 {
 	log
 	encode zstd gzip
 
@@ -15,17 +18,6 @@
 	}
 
 	handle /api/analyze {
-		# Caddy is the edge, so the peer address is the client's (rootless
-		# podman: only with WEB_NETWORK_MODE=pasta, see compose.yaml). A typing
-		# user sends ~3 requests/s (300 ms debounce); the headroom absorbs Run
-		# presses and retries. Over the limit: 429 without a body.
-		rate_limit {
-			zone analyze {
-				key {remote_host}
-				window 5s
-				events 25
-			}
-		}
 		# 8 KiB of source, JSON-escaped, fits easily; the gateway checks the real limit.
 		request_body {
 			max_size 64KB

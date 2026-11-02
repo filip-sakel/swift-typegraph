@@ -1,5 +1,6 @@
-# scripts/up.sh, or docker compose up -d --build   →   http://localhost:${HTTP_PORT:-8080}
-# On a server, .env sets SITE_ADDRESS to the domain and the ports to 80/443 (DEPLOY.md).
+# scripts/up.sh, or docker compose up -d --build   →   http://localhost:${HTTP_PORT:-4000}
+# A private proxy on loopback; a public one in front adds TLS and the rate
+# limit (DEPLOY.md).
 
 services:
   gateway:
@@ -40,23 +41,14 @@ services:
       dockerfile: web/Dockerfile
       args:
         VITE_BUG_REPORT_URL: ${BUG_REPORT_URL:-}
-    environment:
-      # ":80" serves plain HTTP; a domain turns on automatic HTTPS.
-      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
-    # The rate limit is per client address, so published ports must keep it.
-    # Rootful docker's "bridge" does. Rootless podman needs "pasta": on bridge
-    # networks it proxies ports through rootlessport, and every client shows
-    # up as the container's own address. scripts/up.sh picks pasta for podman.
-    network_mode: ${WEB_NETWORK_MODE:-bridge}
+    # Loopback only: a public port would bypass the rate limit.
     ports:
-      - "${HTTP_PORT:-8080}:80"
-      - "${HTTPS_PORT:-8443}:443"
-      - "${HTTPS_PORT:-8443}:443/udp" # HTTP/3
+      - "127.0.0.1:${HTTP_PORT:-4000}:4000"
+    environment:
+      # Caddy's instance files; nothing here needs to persist.
+      XDG_DATA_HOME: /tmp/caddy-data
+      XDG_CONFIG_HOME: /tmp/caddy-config
     volumes:
-      # Certificates and ACME account; losing them means re-issuing, which
-      # Let's Encrypt rate-limits.
-      - caddy_data:/data
-      - caddy_config:/config
       - gateway_socket:/run/typegraph:ro
     depends_on:
       gateway:
@@ -64,12 +56,9 @@ services:
     read_only: true
     tmpfs: [/tmp]
     cap_drop: [ALL]
-    cap_add: [NET_BIND_SERVICE]
     security_opt: ["no-new-privileges:true"]
     restart: unless-stopped
 
 volumes:
   failures:
   gateway_socket:
-  caddy_data:
-  caddy_config:

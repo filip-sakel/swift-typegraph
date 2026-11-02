@@ -202,7 +202,7 @@ type Diagnostic = { range: Range; severity: "error" | "warning" | "note"; messag
 type Stats = { elapsedMs: number; peakMemoryKiB: number }
 ```
 Analysis outcomes come back as HTTP 200 with a `status`; the gateway's own
-answers use the HTTP codes noted above. Caddy adds `429` (rate-limited) and
+answers use the HTTP codes noted above. The proxies add `429` (rate-limited) and
 `413` for oversized bodies, both without a JSON body; the client maps those,
 network errors (`offline`) and aborts (`superseded`) to statuses too.
 
@@ -443,7 +443,7 @@ A banner under the header names the failure:
 
 | Layer | Choice |
 |---|---|
-| Reverse proxy, TLS and static files | **Caddy 2.11** with the `caddy-ratelimit` plugin |
+| Static files and `/api` proxy | **Caddy 2.11** |
 | HTTP server | **Swift + Hummingbird 2** (`typegraph-gateway`) |
 | Analyzer | **Swift executable** (`typegraph-worker`) linking `swift-syntax-wip` |
 | Frontend | **Vite + TypeScript + Svelte 5** |
@@ -452,7 +452,7 @@ A banner under the header names the failure:
 | State | A runes module (`store.svelte.ts`) holding selection, history, settings and the last response |
 
 ### 7.2 Why
-- **Caddy, not nginx.** The analyzer endpoint is public and CPU-bound, so it needs a front that rate-limits per IP, caps body size, compresses, caches static assets and times out the proxy. Caddy does all of that and also obtains and renews Let's Encrypt certificates itself, so the server needs no certbot, cron job or mounted certs: setting `SITE_ADDRESS` to a domain is the whole TLS setup. The cost is rate limiting, which stock Caddy lacks: `web/Dockerfile` compiles in `github.com/mholt/caddy-ratelimit` with `xcaddy`, pinned to a commit because the plugin has no recent release tag. Its limiter is a sliding window rather than nginx's token bucket, which makes no difference at these rates. If the host already terminates TLS (Traefik, Cloudflare), leave `SITE_ADDRESS=:80` and Caddy serves plain HTTP behind it.
+- **Caddy, not nginx.** It serves the client, compresses, caches static assets, caps body size and times out the proxy to the gateway's socket in a few lines of config. The stack is a private proxy on `127.0.0.1:4000`; TLS and the per-IP rate limit on `/api/analyze` belong to the public proxy in front of it, the only one that sees client addresses.
 - **Hummingbird over Vapor.** The gateway only needs one route, a process pool and a queue. Hummingbird is smaller and NIO-native, with no ORM, templating or other unused machinery.
 - **Separate worker executable**: see §5.1. This is the most important architectural decision in the app.
 - **Svelte over React.** React's only real advantage here was React Flow's maturity, and the graph ended up as custom SVG anyway (§6.3). CodeMirror and elkjs don't depend on any framework. The app's core is one hover/selection state that three panes react to on every mouse move. Svelte's fine-grained reactivity handles that directly, while React needs memoized selectors (zustand) to avoid re-rendering the editor, the graph and the details panel on every hover.
@@ -463,7 +463,7 @@ A banner under the header names the failure:
 swift-typegraph/
 ├── SPEC.md
 ├── README.md                     # running it (docker, podman, dev)
-├── DEPLOY.md                     # server, domain, .env
+├── DEPLOY.md                     # server, .env, public-proxy contract
 ├── scripts/up.sh                 # compose up --build, prints the URL
 ├── compose.yaml
 ├── .dockerignore
@@ -478,13 +478,13 @@ swift-typegraph/
 └── web/
     ├── src/{api,editor,graph,details,ui}/, store.svelte.ts
     ├── Caddyfile
-    └── Dockerfile                # node build + xcaddy → Caddy image with dist/
+    └── Dockerfile                # node build → Caddy image with dist/
 ```
 
 ### 7.4 Docker Compose
 `scripts/up.sh` (`docker compose` or `podman compose` `up -d --build`) serves
-the app on `${HTTP_PORT:-8080}` and prints the URL. [README.md](README.md) covers
-running it, including Podman; [DEPLOY.md](DEPLOY.md) covers a server with a domain. See `compose.yaml`. In short:
+the app on `127.0.0.1:${HTTP_PORT:-4000}` and prints the URL. [README.md](README.md) covers
+running it, including Podman; [DEPLOY.md](DEPLOY.md) covers running it behind a public proxy. See `compose.yaml`. In short:
 
 - **gateway**: `server/Dockerfile` builds on `swiftlang/swift:nightly-main-noble`
   (the engine needs a main-branch compiler, like the local toolchain) with
@@ -495,14 +495,10 @@ running it, including Podman; [DEPLOY.md](DEPLOY.md) covers a server with a doma
   Env: `WORKERS` (default 4), `CHECK_INVARIANTS=1` and the
   three limits.
 - **web**: `web/Dockerfile` builds the client (build arg `BUG_REPORT_URL` →
-  `VITE_BUG_REPORT_URL`) and a Caddy binary with the rate-limit plugin into
-  `caddy:2.11.7-alpine`. `web/Caddyfile` limits `/api/analyze` to 25 requests
-  per 5 s per IP (429), caps bodies at 64 KB (413), compresses, caches
-  `/assets/` as immutable, and proxies `/api/` to the gateway's socket. Its
-  network mode is `WEB_NETWORK_MODE` (default `bridge`; `pasta` under rootless
-  podman, so Caddy sees client addresses). `SITE_ADDRESS`
-  (default `:80`, plain HTTP) set to a domain turns on automatic HTTPS; the
-  certificates live on the `caddy_data` volume.
+  `VITE_BUG_REPORT_URL`) into `caddy:2.11.7-alpine`. `web/Caddyfile` serves
+  plain HTTP on `:4000` (published on loopback as `HTTP_PORT`), caps bodies at
+  64 KB (413), compresses, caches `/assets/` as immutable, and proxies `/api/`
+  to the gateway's socket.
 - **Architecture**: build images on the target server (`docker compose build`)
   or on native CI rather than through QEMU, which is very slow for Swift.
 
