@@ -13,5 +13,8 @@ ENV VITE_BUG_REPORT_URL=$VITE_BUG_REPORT_URL
 RUN pnpm build
 
 FROM docker.io/library/caddy:2.11.7-alpine
+# The image gives caddy cap_net_bind_service; with cap_drop ALL (compose.yaml)
+# the kernel refuses to exec it. Port 4000 needs no capability, so drop it.
+RUN setcap -r /usr/bin/caddy
 COPY web/Caddyfile /etc/caddy/Caddyfile
 COPY --from=build /web/dist /srv
